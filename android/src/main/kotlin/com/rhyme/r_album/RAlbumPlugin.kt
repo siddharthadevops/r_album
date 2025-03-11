@@ -57,8 +57,10 @@ class RAlbumPlugin : FlutterPlugin, MethodCallHandler {
     }
 
     private fun saveAlbum(call: MethodCall, result: Result) {
+        // Get the album name and file paths from the call arguments.
         val albumName = call.argument<String>("albumName")
         val filePaths = call.argument<List<String>>("filePaths")
+
         if (albumName == null) {
             result.error("100", "albumName cannot be null", null)
             return
@@ -67,16 +69,17 @@ class RAlbumPlugin : FlutterPlugin, MethodCallHandler {
             result.error("101", "filePaths cannot be null", null)
             return
         }
+
         thread {
-            val savedPaths = mutableListOf<String>()
             try {
+                // Process each file path
                 for (path in filePaths) {
-                    // Extraemos la extensión y generamos un nombre único
+                    // Extract the extension and generate a unique file name.
                     val suffix = if (path.contains(".")) path.substringAfterLast(".") else ""
                     val fileName = if (suffix.isNotEmpty()) "${System.currentTimeMillis()}.$suffix" else "${System.currentTimeMillis()}"
 
                     if (Build.VERSION.SDK_INT >= 29) {
-                        // Usamos MediaStore para Android 10+ (API 29)
+                        // Use MediaStore for Android 10+ (API 29)
                         val values = ContentValues().apply {
                             put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
                             put(MediaStore.Images.Media.MIME_TYPE, "image/${if (suffix.isNotEmpty()) suffix else "jpeg"}")
@@ -94,10 +97,9 @@ class RAlbumPlugin : FlutterPlugin, MethodCallHandler {
                             values.clear()
                             values.put("is_pending", 0)
                             resolver?.update(uri, values, null, null)
-                            savedPaths.add(uri.toString())
                         }
                     } else {
-                        // Para versiones anteriores se usa acceso directo al sistema de archivos.
+                        // For older Android versions, use direct file system access.
                         val dcimDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM)
                         val albumDir = File(dcimDir, albumName)
                         if (!albumDir.exists()) albumDir.mkdirs()
@@ -107,15 +109,15 @@ class RAlbumPlugin : FlutterPlugin, MethodCallHandler {
                                 input.copyTo(output)
                             }
                         }
-                        savedPaths.add(file.absolutePath)
                         context?.sendBroadcast(Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE, Uri.fromFile(file)))
                     }
                 }
+                // Once all files are processed, return true.
                 handler.post {
-                    // Devuelve la lista de rutas/URIs guardadas.
-                    result.success(savedPaths)
+                    result.success(true)
                 }
             } catch (e: Exception) {
+                // In case of error, send error result.
                 handler.post {
                     result.error("102", "Error saving album: ${e.message}", null)
                 }
