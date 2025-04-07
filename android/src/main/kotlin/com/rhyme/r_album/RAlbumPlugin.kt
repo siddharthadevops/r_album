@@ -23,7 +23,7 @@ const val methodName: String = "com.rhyme_lph/r_album"
 var context: Context? = null
 
 class RAlbumPlugin : FlutterPlugin, MethodCallHandler {
-    // Usamos el handler del hilo principal.
+    // Use the main thread handler.
     private val handler: Handler = Handler(Looper.getMainLooper())
 
     override fun onAttachedToEngine(@NonNull flutterPluginBinding: FlutterPlugin.FlutterPluginBinding) {
@@ -47,7 +47,9 @@ class RAlbumPlugin : FlutterPlugin, MethodCallHandler {
             return
         }
         thread {
+            // For API < 29 we create the album folder manually.
             if (Build.VERSION.SDK_INT < 29) {
+                // For images, we use DCIM.
                 val dcimDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM)
                 val albumDir = File(dcimDir, albumName)
                 if (!albumDir.exists()) albumDir.mkdirs()
@@ -72,52 +74,95 @@ class RAlbumPlugin : FlutterPlugin, MethodCallHandler {
 
         thread {
             try {
-                // Process each file path
+                // List of common video extensions.
+                val videoExtensions = listOf("mp4", "3gp", "mkv", "avi", "mov", "flv", "wmv")
+
+                // Process each file path.
                 for (path in filePaths) {
-                    // Extract the extension and generate a unique file name.
-                    val suffix = if (path.contains(".")) path.substringAfterLast(".") else ""
-                    val fileName = if (suffix.isNotEmpty()) "${System.currentTimeMillis()}.$suffix" else "${System.currentTimeMillis()}"
+                    // Extract the file extension.
+                    val extension = if (path.contains(".")) path.substringAfterLast(".") else ""
+                    // Determine if this is a video based on the extension.
+                    val isVideo = videoExtensions.contains(extension.lowercase())
+                    // Generate a unique file name.
+                    val fileName = if (extension.isNotEmpty()) "${System.currentTimeMillis()}.$extension" else "${System.currentTimeMillis()}"
 
                     if (Build.VERSION.SDK_INT >= 29) {
-                        // Use MediaStore for Android 10+ (API 29)
-                        val values = ContentValues().apply {
-                            put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
-                            put(MediaStore.Images.Media.MIME_TYPE, "image/${if (suffix.isNotEmpty()) suffix else "jpeg"}")
-                            put("relative_path", "DCIM/$albumName")
-                            put("is_pending", 1)
-                        }
                         val resolver = context?.contentResolver
-                        val uri: Uri? = resolver?.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
-                        if (uri != null) {
-                            resolver.openOutputStream(uri)?.use { outputStream ->
-                                FileInputStream(path).use { inputStream ->
-                                    inputStream.copyTo(outputStream)
-                                }
+                        if (isVideo) {
+                            // Save video using MediaStore.Video for Android 10+.
+                            val values = ContentValues().apply {
+                                put(MediaStore.Video.Media.DISPLAY_NAME, fileName)
+                                put(MediaStore.Video.Media.MIME_TYPE, "video/${if (extension.isNotEmpty()) extension else "mp4"}")
+                                // Use Movies directory for videos.
+                                put("relative_path", "Movies/$albumName")
+                                put("is_pending", 1)
                             }
-                            values.clear()
-                            values.put("is_pending", 0)
-                            resolver?.update(uri, values, null, null)
+                            val uri: Uri? = resolver?.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
+                            if (uri != null) {
+                                resolver.openOutputStream(uri)?.use { outputStream ->
+                                    FileInputStream(path).use { inputStream ->
+                                        inputStream.copyTo(outputStream)
+                                    }
+                                }
+                                values.clear()
+                                values.put("is_pending", 0)
+                                resolver?.update(uri, values, null, null)
+                            }
+                        } else {
+                            // Save image using MediaStore.Images for Android 10+.
+                            val values = ContentValues().apply {
+                                put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
+                                put(MediaStore.Images.Media.MIME_TYPE, "image/${if (extension.isNotEmpty()) extension else "jpeg"}")
+                                put("relative_path", "DCIM/$albumName")
+                                put("is_pending", 1)
+                            }
+                            val uri: Uri? = resolver?.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+                            if (uri != null) {
+                                resolver.openOutputStream(uri)?.use { outputStream ->
+                                    FileInputStream(path).use { inputStream ->
+                                        inputStream.copyTo(outputStream)
+                                    }
+                                }
+                                values.clear()
+                                values.put("is_pending", 0)
+                                resolver?.update(uri, values, null, null)
+                            }
                         }
                     } else {
-                        // For older Android versions, use direct file system access.
-                        val dcimDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM)
-                        val albumDir = File(dcimDir, albumName)
-                        if (!albumDir.exists()) albumDir.mkdirs()
-                        val file = File(albumDir, fileName)
-                        FileInputStream(path).use { input ->
-                            file.outputStream().use { output ->
-                                input.copyTo(output)
+                        // For Android versions below 29, use direct file system access.
+                        if (isVideo) {
+                            // Save video to Movies directory.
+                            val moviesDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES)
+                            val albumDir = File(moviesDir, albumName)
+                            if (!albumDir.exists()) albumDir.mkdirs()
+                            val file = File(albumDir, fileName)
+                            FileInputStream(path).use { input ->
+                                file.outputStream().use { output ->
+                                    input.copyTo(output)
+                                }
                             }
+                            context?.sendBroadcast(Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE, Uri.fromFile(file)))
+                        } else {
+                            // Save image to DCIM directory.
+                            val dcimDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM)
+                            val albumDir = File(dcimDir, albumName)
+                            if (!albumDir.exists()) albumDir.mkdirs()
+                            val file = File(albumDir, fileName)
+                            FileInputStream(path).use { input ->
+                                file.outputStream().use { output ->
+                                    input.copyTo(output)
+                                }
+                            }
+                            context?.sendBroadcast(Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE, Uri.fromFile(file)))
                         }
-                        context?.sendBroadcast(Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE, Uri.fromFile(file)))
                     }
                 }
-                // Once all files are processed, return true.
+                // Once all files are processed, return success.
                 handler.post {
                     result.success(true)
                 }
             } catch (e: Exception) {
-                // In case of error, send error result.
+                // Return error if saving fails.
                 handler.post {
                     result.error("102", "Error saving album: ${e.message}", null)
                 }
