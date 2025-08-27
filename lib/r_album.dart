@@ -25,4 +25,15 @@ class RAlbum {
       'filePaths': filePaths,
     });
   }
+  
+  /// save files in album with location data
+  static Future<bool?> saveAlbumWithLocation(
+      String albumName, List<String> filePaths, {double? latitude, double? longitude}) async {
+    return await _channel.invokeMethod('saveAlbumWithLocation', {
+      'albumName': albumName,
+      'filePaths': filePaths,
+      'latitude': latitude,
+      'longitude': longitude,
+    });
+  }
 }

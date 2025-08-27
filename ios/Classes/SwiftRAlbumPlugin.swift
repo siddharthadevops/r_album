@@ -2,6 +2,8 @@ import Flutter
 import UIKit
 import Photos
 import MobileCoreServices
+import CoreLocation
+import AVFoundation
 
 public class SwiftRAlbumPlugin: NSObject, FlutterPlugin {
     public static func register(with registrar: FlutterPluginRegistrar) {
@@ -18,6 +20,9 @@ public class SwiftRAlbumPlugin: NSObject, FlutterPlugin {
         case "saveAlbum":
             self.saveAlbum(call,result: result)
             break
+        case "saveAlbumWithLocation":
+            self.saveAlbumWithLocation(call,result: result)
+            break
         default:
             result(FlutterMethodNotImplemented)
         }
@@ -33,17 +38,63 @@ public class SwiftRAlbumPlugin: NSObject, FlutterPlugin {
         let arguments = call.arguments as! Dictionary<String,Any>
         let albumName = arguments["albumName"] as! String
         let filePaths = arguments["filePaths"] as! [String]
+        
+        if filePaths.isEmpty {
+            result(true)
+            return
+        }
+        
         let albumSaver = AlbumSaver(folderName: albumName)
+        var processedCount = 0
+        let totalFiles = filePaths.count
+        var hasError = false
+        
         for path in filePaths {
             let asset = AVURLAsset.init(url: URL(fileURLWithPath: path), options: nil)
-            let tracks = asset.tracks(withMediaType: AVMediaType.video)
-            if(tracks.count > 0){
-                albumSaver.saveVideo(filePath: path, completion: result)
+            let videoTracks = asset.tracks(withMediaType: AVMediaType.video)
+            let audioTracks = asset.tracks(withMediaType: AVMediaType.audio)
+            
+            if(videoTracks.count > 0){
+                albumSaver.saveVideo(filePath: path) { success in
+                    processedCount += 1
+                    if !success { hasError = true }
+                    if processedCount == totalFiles {
+                        result(!hasError)
+                    }
+                }
+            }else if(audioTracks.count > 0){
+                // Skip audio files - iOS Photos app doesn't support them
+                print("Skipping audio file (not supported in Photos): \(path)")
+                processedCount += 1
+                if processedCount == totalFiles {
+                    result(!hasError)
+                }
             }else{
-                albumSaver.saveImage(filePath: path,completion: result)
+                albumSaver.saveImage(filePath: path) { success in
+                    processedCount += 1
+                    if !success { hasError = true }
+                    if processedCount == totalFiles {
+                        result(!hasError)
+                    }
+                }
             }
         }
-//        result(true)
+    }
+    
+    private func saveAlbumWithLocation(_ call: FlutterMethodCall, result: @escaping FlutterResult){
+        let arguments = call.arguments as! Dictionary<String,Any>
+        let albumName = arguments["albumName"] as! String
+        let filePaths = arguments["filePaths"] as! [String]
+        let latitude = arguments["latitude"] as? Double
+        let longitude = arguments["longitude"] as? Double
+        
+        if filePaths.isEmpty {
+            result(true)
+            return
+        }
+        
+        let albumSaver = AlbumSaver(folderName: albumName)
+        albumSaver.saveFilesWithLocation(filePaths: filePaths, latitude: latitude, longitude: longitude, completion: result)
     }
 }
 
@@ -157,6 +208,121 @@ class AlbumSaver: NSObject {
                     if success {
                         completion(true)
                         print("Successfully saved video to Camera Roll.")
+                    } else {
+                        completion(false)
+                        print("Error writing to video library: \(error!.localizedDescription)")
+                    }
+                })
+            }else{
+                completion(false)
+                print("Save Video Not Permission.")
+            }
+        }
+    }
+    
+    func saveFilesWithLocation(filePaths: [String], latitude: Double?, longitude: Double?, completion: @escaping ((_ success: Bool) -> Void)) {
+        var location: CLLocation? = nil
+        if let lat = latitude, let lon = longitude {
+            location = CLLocation(latitude: lat, longitude: lon)
+        }
+        
+        var processedCount = 0
+        var successCount = 0
+        let totalFiles = filePaths.count
+        
+        for path in filePaths {
+            let asset = AVURLAsset.init(url: URL(fileURLWithPath: path), options: nil)
+            let videoTracks = asset.tracks(withMediaType: AVMediaType.video)
+            let audioTracks = asset.tracks(withMediaType: AVMediaType.audio)
+            
+            if(videoTracks.count > 0){
+                self.saveVideoWithLocation(filePath: path, location: location) { success in
+                    processedCount += 1
+                    if success {
+                        successCount += 1
+                    }
+                    if processedCount == totalFiles {
+                        // Return true only if at least one file was saved successfully
+                        completion(successCount > 0)
+                    }
+                }
+            }else if(audioTracks.count > 0){
+                // Skip audio files - iOS Photos app doesn't support them
+                print("Skipping audio file (not supported in Photos): \(path)")
+                processedCount += 1
+                if processedCount == totalFiles {
+                    // Return true only if at least one file was saved successfully
+                    completion(successCount > 0)
+                }
+            }else{
+                self.saveImageWithLocation(filePath: path, location: location) { success in
+                    processedCount += 1
+                    if success {
+                        successCount += 1
+                    }
+                    if processedCount == totalFiles {
+                        // Return true only if at least one file was saved successfully
+                        completion(successCount > 0)
+                    }
+                }
+            }
+        }
+    }
+    
+    func saveImageWithLocation(filePath: String, location: CLLocation?, completion: @escaping ((_ success: Bool) -> Void)) {
+        self.checkAuthorizationWithHandler { (success) in
+            if success, self.assetCollection != nil {
+                PHPhotoLibrary.shared().performChanges({
+                    let assetChangeRequest = PHAssetChangeRequest.creationRequestForAssetFromImage(atFileURL: URL(fileURLWithPath: filePath))
+                    
+                    // Set location if available
+                    if let location = location {
+                        assetChangeRequest?.location = location
+                    }
+                    
+                    let assetPlaceHolder = assetChangeRequest?.placeholderForCreatedAsset
+                    if let albumChangeRequest = PHAssetCollectionChangeRequest(for: self.assetCollection) {
+                        let enumeration: NSArray = [assetPlaceHolder!]
+                        albumChangeRequest.addAssets(enumeration)
+                    }
+                    
+                }, completionHandler: { (success, error) in
+                    if success {
+                        completion(true)
+                        print("Successfully saved image with location to Camera Roll.")
+                    } else {
+                        completion(false)
+                        print("Error writing to image library: \(error!.localizedDescription)")
+                    }
+                })
+            }else{
+                completion(false)
+                print("Save Image Not Permission.")
+            }
+        }
+    }
+    
+    func saveVideoWithLocation(filePath: String, location: CLLocation?, completion: @escaping ((_ success: Bool) -> Void)) {
+        self.checkAuthorizationWithHandler { (success) in
+            if success, self.assetCollection != nil {
+                PHPhotoLibrary.shared().performChanges({
+                    let assetChangeRequest = PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: URL(fileURLWithPath: filePath))
+                    
+                    // Set location if available
+                    if let location = location {
+                        assetChangeRequest?.location = location
+                    }
+                    
+                    let assetPlaceHolder = assetChangeRequest?.placeholderForCreatedAsset
+                    if let albumChangeRequest = PHAssetCollectionChangeRequest(for: self.assetCollection) {
+                        let enumeration: NSArray = [assetPlaceHolder!]
+                        albumChangeRequest.addAssets(enumeration)
+                    }
+                    
+                }, completionHandler: { (success, error) in
+                    if success {
+                        completion(true)
+                        print("Successfully saved video with location to Camera Roll.")
                     } else {
                         completion(false)
                         print("Error writing to video library: \(error!.localizedDescription)")
